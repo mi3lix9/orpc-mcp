@@ -1,0 +1,21 @@
+# Hidden folders and files
+.*
+!.gitignore
+!.npmrc
+!.github/
+!.vscode/
+
+# Common generated folders
+node_modules/
+dist/
+coverage/
+temp/
+
+# Common generated files
+*.log
+*.tsbuildinfo
+vitest.config.ts.timestamp-*
+
+# Common manual ignore files
+*.local
+*.pem

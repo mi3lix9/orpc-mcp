@@ -1,0 +1,103 @@
+{
+  "name": "orpc-mcp",
+  "type": "module",
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.10.0",
+  "description": "Serve an oRPC router as an MCP server — tools, resources, and prompts over Streamable HTTP or stdio.",
+  "license": "MIT",
+  "homepage": "https://github.com/mi3lix9/orpc-mcp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mi3lix9/orpc-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mi3lix9/orpc-mcp/issues"
+  },
+  "keywords": [
+    "orpc",
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "tools"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "exports": {
+      "./package.json": "./package.json",
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs",
+        "default": "./dist/index.mjs"
+      },
+      "./standard": {
+        "types": "./dist/adapters/standard/index.d.mts",
+        "import": "./dist/adapters/standard/index.mjs",
+        "default": "./dist/adapters/standard/index.mjs"
+      },
+      "./fetch": {
+        "types": "./dist/adapters/fetch/index.d.mts",
+        "import": "./dist/adapters/fetch/index.mjs",
+        "default": "./dist/adapters/fetch/index.mjs"
+      },
+      "./node": {
+        "types": "./dist/adapters/node/index.d.mts",
+        "import": "./dist/adapters/node/index.mjs",
+        "default": "./dist/adapters/node/index.mjs"
+      },
+      "./stdio": {
+        "types": "./dist/adapters/stdio/index.d.mts",
+        "import": "./dist/adapters/stdio/index.mjs",
+        "default": "./dist/adapters/stdio/index.mjs"
+      }
+    }
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    ".": "./src/index.ts",
+    "./standard": "./src/adapters/standard/index.ts",
+    "./fetch": "./src/adapters/fetch/index.ts",
+    "./node": "./src/adapters/node/index.ts",
+    "./stdio": "./src/adapters/stdio/index.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "unbuild",
+    "type:check": "tsc --noEmit",
+    "lint": "eslint --max-warnings=0 .",
+    "lint:fix": "eslint --max-warnings=0 --fix .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "peerDependencies": {
+    "@orpc/client": "^2.0.0-beta.16",
+    "@orpc/contract": "^2.0.0-beta.16",
+    "@orpc/json-schema": "^2.0.0-beta.16",
+    "@orpc/server": "^2.0.0-beta.16",
+    "@orpc/shared": "^2.0.0-beta.16"
+  },
+  "dependencies": {
+    "@standardserver/core": "^0.2.0"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^9.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@orpc/client": "2.0.0-beta.16",
+    "@orpc/contract": "2.0.0-beta.16",
+    "@orpc/json-schema": "2.0.0-beta.16",
+    "@orpc/server": "2.0.0-beta.16",
+    "@orpc/shared": "2.0.0-beta.16",
+    "@orpc/zod": "2.0.0-beta.16",
+    "@types/node": "^26.0.1",
+    "@vitest/coverage-v8": "^4.1.9",
+    "bumpp": "^11.1.0",
+    "eslint": "^10.5.0",
+    "eslint-plugin-format": "^2.0.1",
+    "typescript": "^6.0.3",
+    "unbuild": "^3.6.1",
+    "vitest": "^4.1.9",
+    "zod": "^4.4.3"
+  }
+}

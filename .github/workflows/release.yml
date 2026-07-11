@@ -1,0 +1,74 @@
+name: Release
+run-name: ${{ github.workflow }} v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.1.0, 0.2.0-beta.1)'
+        required: true
+        type: string
+      tag:
+        description: 'npm dist-tag (defaults to "latest", or the preid for prereleases)'
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # required for npm provenance
+    steps:
+      - id: version
+        run: |
+          VERSION="${{ inputs.version }}"
+
+          if [[ ! $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([a-z]+)\.([0-9]+))?$ ]]; then
+            echo "INVALID VERSION FORMAT: $VERSION" >&2
+            exit 1
+          fi
+
+          TAG="${{ inputs.tag }}"
+          if [[ -z "$TAG" ]]; then
+            TAG="${BASH_REMATCH[5]:-latest}"
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run type:check
+      - run: pnpm run test
+      - run: pnpm run build
+
+      - name: Bump version and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          pnpm exec bumpp "${{ inputs.version }}" --commit "chore: release v%s" --tag "v%s" --push --yes
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance --tag ${{ steps.version.outputs.tag }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        run: gh release create "v${{ inputs.version }}" --generate-notes ${{ steps.version.outputs.tag != 'latest' && '--prerelease' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
