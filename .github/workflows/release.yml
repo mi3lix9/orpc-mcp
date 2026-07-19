@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write # required for npm provenance
+      id-token: write # required for npm trusted publishing (OIDC) + provenance
     steps:
       - id: version
         run: |
@@ -51,6 +51,9 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing (OIDC) requires npm >= 11.5.1
+      - run: npm install -g npm@latest
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run type:check
@@ -63,10 +66,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           pnpm exec bumpp "${{ inputs.version }}" --commit "chore: release v%s" --tag "v%s" --push --yes
 
+      # Authenticates via OIDC trusted publishing — no NPM_TOKEN needed.
+      # Provenance is attached automatically.
       - name: Publish to npm
-        run: npm publish --access public --provenance --tag ${{ steps.version.outputs.tag }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --tag ${{ steps.version.outputs.tag }}
 
       - name: Create GitHub release
         run: gh release create "v${{ inputs.version }}" --generate-notes ${{ steps.version.outputs.tag != 'latest' && '--prerelease' || '' }}
