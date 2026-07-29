@@ -2,6 +2,11 @@ import { Readable, Writable } from 'node:stream'
 import { os } from '@orpc/server'
 import { ZodToJsonSchemaConverter } from '@orpc/zod'
 import * as z from 'zod'
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  FIRST_MODERN_PROTOCOL_VERSION,
+  PROTOCOL_VERSION_META_KEY,
+} from '../../constants'
 import { mcp } from '../../meta'
 import { MCPHandler } from './mcp-handler'
 
@@ -109,5 +114,63 @@ describe('mCPHandler (stdio)', () => {
     expect(responses[0].error.code).toBe(-32700)
     expect(responses[1].id).toBe(7)
     expect(typeof responses[1].result.protocolVersion).toBe('string')
+  })
+})
+
+describe('mCPHandler (stdio) — modern era', () => {
+  /** A modern-era line. stdio carries no headers, so the envelope is the only era signal. */
+  function modernLine(message: Record<string, unknown>, meta?: Record<string, unknown>): string {
+    const params = (message.params ?? {}) as Record<string, unknown>
+    return `${JSON.stringify({
+      ...message,
+      params: {
+        ...params,
+        _meta: {
+          [PROTOCOL_VERSION_META_KEY]: FIRST_MODERN_PROTOCOL_VERSION,
+          [CLIENT_CAPABILITIES_META_KEY]: {},
+          ...meta,
+        },
+      },
+    })}\n`
+  }
+
+  it('serves a modern request with no headers at all', async () => {
+    // The SEP-2243 standard request headers are Streamable-HTTP-only; requiring
+    // them here would reject every valid modern stdio message.
+    const responses = await drive(createHandler(), modernLine({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))
+
+    expect(responses).toHaveLength(1)
+    expect(responses[0].result.resultType).toBe('complete')
+    expect(responses[0].result.tools.map((t: any) => t.name)).toEqual(['greet'])
+  })
+
+  it('answers server/discover over stdio', async () => {
+    const responses = await drive(createHandler(), modernLine({ jsonrpc: '2.0', id: 1, method: 'server/discover' }))
+
+    expect(responses[0].result.supportedVersions).toEqual([FIRST_MODERN_PROTOCOL_VERSION])
+    expect(responses[0].result.resultType).toBe('complete')
+  })
+
+  it('still validates the envelope over stdio', async () => {
+    const responses = await drive(
+      createHandler(),
+      modernLine({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, { [CLIENT_CAPABILITIES_META_KEY]: undefined }),
+    )
+
+    expect(responses[0].error.code).toBe(-32602)
+    expect(responses[0].error.message).toContain(CLIENT_CAPABILITIES_META_KEY)
+  })
+
+  it('interleaves both eras on one stream without leaking state', async () => {
+    const legacyInit = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+    const legacyList = JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
+    const payload = `${legacyInit}\n${modernLine({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}${legacyList}\n`
+    const responses = await drive(createHandler(), payload)
+
+    expect(responses.map(r => r.id)).toEqual([1, 2, 3])
+    expect(responses[0].result.protocolVersion).toBe('2025-11-25')
+    expect(responses[1].result.resultType).toBe('complete')
+    // The legacy request after a modern one must stay legacy-shaped.
+    expect(responses[2].result.resultType).toBeUndefined()
   })
 })

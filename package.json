@@ -77,6 +77,7 @@
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
+    "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@orpc/client": "2.0.0-beta.16",
     "@orpc/contract": "2.0.0-beta.16",
