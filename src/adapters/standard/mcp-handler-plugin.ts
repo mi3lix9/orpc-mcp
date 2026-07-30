@@ -9,6 +9,7 @@ import type {
 import type { InterceptorOptions } from '@orpc/shared'
 import type { StandardLazyRequest } from '@standardserver/core'
 import type { AuthorizeCatalogEntry } from '../../authorization'
+import type { MCPCatalogEntry } from '../../authorization'
 import type { MCPRegistry, MCPRegistryProvider } from '../../registry'
 import type {
   CacheHints,
@@ -296,7 +297,7 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
     // 9. Protocol methods → early response. These throw `ORPCError` on failure
     //    (unknown method, bad cursor); map to a JSON-RPC error at this boundary.
     try {
-      const result = await this.handleProtocol(payload, classified.era)
+      const result = await this.handleProtocol(payload, classified.era, options)
       return jsonRpc(200, id, { result: this.finalizeResult(payload.method, classified.era, result) })
     }
     catch (error) {
@@ -567,7 +568,11 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
     return result
   }
 
-  private async handleProtocol(message: JSONRPCIncoming, era: ProtocolEra): Promise<unknown> {
+  private async handleProtocol(
+    message: JSONRPCIncoming,
+    era: ProtocolEra,
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+  ): Promise<unknown> {
     const params = isObject(message.params) ? message.params : {}
     const method = message.method
 
@@ -580,22 +585,50 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
 
     switch (method) {
       case 'initialize':
-        return this.initialize(params)
+        return this.initialize(params, options)
       case 'ping':
         return {}
       case 'server/discover':
-        return this.discover()
-      case 'tools/list':
-        return this.paginate([...(await this.registry.get()).tools.values()].map(entry => entry.definition), 'tools', params.cursor)
-      case 'resources/list':
-        return this.paginate([...(await this.registry.get()).resources.values()].map(entry => entry.definition), 'resources', params.cursor)
-      case 'resources/templates/list':
-        return this.paginate((await this.registry.get()).resourceTemplates.map(entry => entry.definition), 'resourceTemplates', params.cursor)
-      case 'prompts/list':
-        return this.paginate([...(await this.registry.get()).prompts.values()].map(entry => entry.definition), 'prompts', params.cursor)
+        return this.discover(options)
+      case 'tools/list': {
+        const entries = await this.authorizedEntries([...(await this.registry.get()).tools.values()], options)
+        return this.paginate(entries.map(entry => entry.definition), 'tools', params.cursor)
+      }
+      case 'resources/list': {
+        const entries = await this.authorizedEntries([...(await this.registry.get()).resources.values()], options)
+        return this.paginate(entries.map(entry => entry.definition), 'resources', params.cursor)
+      }
+      case 'resources/templates/list': {
+        const entries = await this.authorizedEntries((await this.registry.get()).resourceTemplates, options)
+        return this.paginate(entries.map(entry => entry.definition), 'resourceTemplates', params.cursor)
+      }
+      case 'prompts/list': {
+        const entries = await this.authorizedEntries([...(await this.registry.get()).prompts.values()], options)
+        return this.paginate(entries.map(entry => entry.definition), 'prompts', params.cursor)
+      }
       default:
         throw new ORPCError('METHOD_NOT_FOUND', { message: `Method not found: ${method}` })
     }
+  }
+
+  private async authorizedEntries<E extends MCPCatalogEntry>(
+    entries: readonly E[],
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+  ): Promise<E[]> {
+    const authorize = this.authorizeCatalogEntry
+    if (authorize === undefined) {
+      return [...entries]
+    }
+
+    const decisions = await Promise.all(entries.map(entry =>
+      authorize({
+        entry,
+        operation: 'discover',
+        context: options.context,
+        request: options.request,
+      }),
+    ))
+    return entries.filter((_, index) => decisions[index])
   }
 
   /**
@@ -603,15 +636,17 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
    * only ever offers modern revisions — a legacy revision here would be a
    * version a modern client cannot actually speak.
    */
-  private async discover(): Promise<Omit<DiscoverResult, 'resultType' | keyof CacheHints>> {
+  private async discover(
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+  ): Promise<Omit<DiscoverResult, 'resultType' | keyof CacheHints>> {
     return {
       supportedVersions: [...SUPPORTED_MODERN_PROTOCOL_VERSIONS],
-      capabilities: await this.capabilities(),
+      capabilities: await this.capabilities(options),
       ...(this.instructions !== undefined ? { instructions: this.instructions } : {}),
     }
   }
 
-  private async initialize(params: Record<string, unknown>): Promise<InitializeResult> {
+  private async initialize(params: Record<string, unknown>, options: StandardHandlerRoutingInterceptorOptions<T>): Promise<InitializeResult> {
     const requested = typeof params.protocolVersion === 'string' ? params.protocolVersion : undefined
     // Legacy negotiation only ever consults the legacy list, so a modern
     // revision can never be accepted or counter-offered by the handshake.
@@ -621,23 +656,29 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
 
     return {
       protocolVersion,
-      capabilities: await this.capabilities(),
+      capabilities: await this.capabilities(options),
       serverInfo: this.serverInfo,
       ...(this.instructions !== undefined ? { instructions: this.instructions } : {}),
     }
   }
 
-  /** What this server can do, derived from what the router actually registered. */
-  private async capabilities(): Promise<ServerCapabilities> {
+  /** What this server can do, derived from the request-authorized catalog. */
+  private async capabilities(options: StandardHandlerRoutingInterceptorOptions<T>): Promise<ServerCapabilities> {
     const registry = await this.registry.get()
+    const [tools, resources, resourceTemplates, prompts] = await Promise.all([
+      this.authorizedEntries([...registry.tools.values()], options),
+      this.authorizedEntries([...registry.resources.values()], options),
+      this.authorizedEntries(registry.resourceTemplates, options),
+      this.authorizedEntries([...registry.prompts.values()], options),
+    ])
     const capabilities: ServerCapabilities = {}
-    if (registry.tools.size > 0) {
+    if (tools.length > 0) {
       capabilities.tools = { listChanged: false }
     }
-    if (registry.resources.size > 0 || registry.resourceTemplates.length > 0) {
+    if (resources.length > 0 || resourceTemplates.length > 0) {
       capabilities.resources = { subscribe: false, listChanged: false }
     }
-    if (registry.prompts.size > 0) {
+    if (prompts.length > 0) {
       capabilities.prompts = { listChanged: false }
     }
     return capabilities

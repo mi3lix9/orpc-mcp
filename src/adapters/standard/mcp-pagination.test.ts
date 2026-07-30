@@ -20,7 +20,15 @@ function createHandler() {
   })
 }
 
-async function list(handler: MCPHandler<any>, cursor?: string): Promise<any> {
+function createAuthorizedHandler() {
+  return new MCPHandler(router as any, {
+    converters: [new ZodToJsonSchemaConverter()],
+    pageSize: 2,
+    authorizeCatalogEntry: ({ entry, context }) => context.allowedNames.has(entry.name),
+  })
+}
+
+async function list(handler: MCPHandler<any>, cursor?: string, allowedNames = new Set<string>()): Promise<any> {
   const params = cursor === undefined ? {} : { cursor }
   const { response } = await handler.handle(
     new Request('https://x/mcp', {
@@ -28,7 +36,7 @@ async function list(handler: MCPHandler<any>, cursor?: string): Promise<any> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params }),
     }),
-    { context: {} },
+    { context: { allowedNames } },
   )
   return (response as Response).json()
 }
@@ -53,6 +61,20 @@ describe('catalog pagination (tools/list)', () => {
 
     // 5 items / pageSize 2 -> [2, 2, 1]; loop terminates because the last page omits nextCursor
     expect(pages).toEqual([['tool1', 'tool2'], ['tool3', 'tool4'], ['tool5']])
+  })
+
+  it('filters before pagination and validates cursors against the authorized catalog', async () => {
+    const handler = createAuthorizedHandler()
+    const allowedNames = new Set(['tool1', 'tool3', 'tool5'])
+    const first = await list(handler, undefined, allowedNames)
+    expect(first.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['tool1', 'tool3'])
+
+    const second = await list(handler, first.result.nextCursor, allowedNames)
+    expect(second.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['tool5'])
+    expect(second.result.nextCursor).toBeUndefined()
+
+    const stale = await list(handler, btoa('3'), allowedNames)
+    expect(stale.error.code).toBe(-32602)
   })
 
   it('rejects an invalid cursor with -32602', async () => {
