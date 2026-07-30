@@ -248,3 +248,81 @@ describe('catalog invocation authorization', () => {
     expect(executions.alpha).toBe(1)
   })
 })
+
+describe('catalog authorization hardening', () => {
+  beforeEach(() => {
+    executions.middleware = 0
+    executions.alpha = 0
+  })
+
+  it('sanitizes callback failures, preserves observability, and never executes the target', async () => {
+    const observedCauses: unknown[] = []
+    const handler = new MCPHandler(router, {
+      converters: [new ZodToJsonSchemaConverter()],
+      authorizeCatalogEntry: () => {
+        throw new Error('database password must not reach the client')
+      },
+      routingInterceptors: [
+        async ({ next }) => {
+          try {
+            return await next()
+          }
+          catch (error) {
+            observedCauses.push(error instanceof Error ? error.cause : undefined)
+            throw error
+          }
+        },
+      ],
+    })
+
+    const discovery = await rpc(handler, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, none)
+    const invocation = await rpc(handler, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'alpha', arguments: { value: 'x' } },
+    }, none)
+
+    for (const response of [discovery, invocation]) {
+      expect(response.error).toEqual({ code: -32603, message: 'Internal error' })
+      expect(JSON.stringify(response)).not.toMatch(/database|password|stack/i)
+    }
+    expect(observedCauses).toHaveLength(2)
+    expect(observedCauses.every(cause => cause instanceof Error && cause.message.includes('database password'))).toBe(true)
+    expect(executions.middleware).toBe(0)
+    expect(executions.alpha).toBe(0)
+  })
+
+  it('isolates concurrent request contexts', async () => {
+    const handler = createHandler(async ({ entry, context }) => {
+      await Promise.resolve()
+      return context.allowedNames.has(entry.name)
+    })
+    const contexts = Array.from({ length: 20 }, (_, index) =>
+      index % 2 === 0
+        ? { allowedNames: new Set(['alpha']) }
+        : { allowedNames: new Set(['beta']) })
+
+    const responses = await Promise.all(contexts.map(context =>
+      rpc(handler, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, context),
+    ))
+    expect(responses.map(response => names(response, 'tools'))).toEqual(
+      contexts.map(context => context.allowedNames.has('alpha') ? ['alpha'] : ['beta']),
+    )
+  })
+
+  it('preserves list and invocation wire output when no callback is configured', async () => {
+    const withoutAuthorization = new MCPHandler(router, {
+      converters: [new ZodToJsonSchemaConverter()],
+    })
+    const allowAll = createHandler(() => true)
+    const messages = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'alpha', arguments: { value: 'x' } } },
+    ]
+
+    for (const message of messages) {
+      expect(await rpc(withoutAuthorization, message, none)).toEqual(await rpc(allowAll, message, none))
+    }
+  })
+})
