@@ -1,7 +1,7 @@
 {
   "name": "orpc-mcp",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packageManager": "pnpm@11.10.0",
   "description": "Serve an oRPC router as an MCP server — tools, resources, and prompts over Streamable HTTP or stdio.",
   "license": "MIT",
