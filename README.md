@@ -3,7 +3,7 @@
 Serve an [oRPC](https://orpc.dev) router as an [MCP](https://modelcontextprotocol.io) server. The **same** procedures you already serve over RPC and OpenAPI become MCP **tools**, **resources**, and **prompts** — usable by clients like Claude, ChatGPT, and IDEs, with the same types, validation, and middleware.
 
 > [!NOTE]
-> This is a **community package**, not part of oRPC core. It was proposed in [middleapi/orpc#1604](https://github.com/middleapi/orpc/pull/1604); the maintainer opted to keep MCP out of core for now and promote it as an ecosystem package. It targets MCP protocol revision `2025-11-25` and oRPC `v2` (currently in beta).
+> This is a **community package**, not part of oRPC core. It was proposed in [middleapi/orpc#1604](https://github.com/middleapi/orpc/pull/1604); the maintainer opted to keep MCP out of core for now and promote it as an ecosystem package. It serves MCP revisions `2024-10-07` through `2026-07-28` and oRPC `v2` (currently in beta).
 
 ## Installation
 
@@ -100,7 +100,7 @@ export const planTrip = os
 
 ## Serving
 
-`MCPHandler` speaks MCP over the [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) transport (Fetch or Node.js) or over stdio. Pass the schema converter for your validation library — the same converters used by `@orpc/openapi`.
+`MCPHandler` speaks MCP over the [Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports) transport (Fetch or Node.js) or over stdio. Pass the schema converter for your validation library — the same converters used by `@orpc/openapi`.
 
 It is built on oRPC's standard request/response flow, so tool, resource, and prompt calls run through your [middleware](https://orpc.dev/docs/middleware), validation, and context, and any handler plugin (CORS, request limit, OpenTelemetry) composes as usual.
 
@@ -189,11 +189,56 @@ export const handlers = {
 }
 ```
 
+## Protocol Revisions
+
+`orpc-mcp` speaks both MCP wire eras from one endpoint, and classifies **every
+request independently** — nothing is remembered between them:
+
+|                 | legacy era                  | modern era                                                |
+| --------------- | --------------------------- | --------------------------------------------------------- |
+| Revisions       | `2024-10-07` … `2025-11-25` | `2026-07-28`                                              |
+| Opening         | `initialize` handshake      | none; `server/discover` advertises                        |
+| Client identity | once, at `initialize`       | per request, in the `_meta` envelope                      |
+| Results         | as-is                       | `resultType`, plus `ttlMs`/`cacheScope` on cacheable ones |
+
+A request is modern when it carries the reserved
+`io.modelcontextprotocol/protocolVersion` `_meta` key. Classification is
+**body-primary**: the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name`
+headers are cross-checked against the body and rejected on disagreement
+(`-32020`), but a header alone never promotes a request to the modern era.
+
+Because the modern era is stateless by construction, any request can land on any
+instance behind a plain round-robin load balancer — no shared session store.
+
+### Cache hints
+
+Modern-era `*/list`, `resources/read` and `server/discover` results must carry
+cache hints. The default is the always-safe pair — never reuse, never share:
+
+```ts
+export const handler = new MCPHandler(router, {
+  converters: [new ZodToJsonSchemaConverter()],
+  // Defaults to { ttlMs: 0, cacheScope: 'private' }.
+  cache: { ttlMs: 60_000, cacheScope: 'public' },
+})
+```
+
+Set `cacheScope: 'public'` only when the payload holds no per-user data: a shared
+gateway may serve a `public` result to a different caller.
+
 ## Limitations
 
-- Targets MCP revision `2025-11-25`; older revisions are accepted during negotiation.
-- One JSON-RPC message per request — batching is not supported.
-- Server-initiated streaming (the `GET` SSE channel), `listChanged`/`subscribe` notifications, and sessions are not implemented. These are being removed or replaced in the next MCP revision, so the stateless request/response design is intentional.
+- One JSON-RPC message per request — batching is not supported (removed from the
+  spec in `2025-06-18`; a batch carrying a modern element is rejected outright).
+- Sessions, the `GET` SSE channel, and `listChanged`/`subscribe` notifications
+  are not implemented. The modern era removes all three, so the stateless
+  request/response design is the target, not a shortcut.
+- Multi Round-Trip Requests (MRTR) are not implemented. Returning
+  `resultType: "input_required"` to ask the user for input mid-call is opt-in for
+  servers, and a server that never needs input is fully compliant without it.
+  Consequently elicitation, sampling, and roots are unsupported — the latter two
+  are deprecated as of `2026-07-28` anyway.
+- The `tasks` and `subscriptions` extensions are not implemented.
 
 ## Development
 

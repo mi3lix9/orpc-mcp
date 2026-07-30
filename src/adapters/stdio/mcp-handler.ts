@@ -53,7 +53,9 @@ export class MCPHandler<T extends Context> {
     const codec = new MCPHandlerCodec<T>(registry)
     this.handler = new StandardHandler<T>(codec, {
       ...options,
-      plugins: [new MCPHandlerPlugin<T>(registry, options), ...toArray(options.plugins)],
+      // stdio carries no header layer, so the SEP-2243 standard request headers
+      // cannot be required here — the body envelope is the only era signal.
+      plugins: [new MCPHandlerPlugin<T>(registry, { ...options, transport: 'stdio' }), ...toArray(options.plugins)],
     })
     this.maxMessageLength = options.maxMessageLength ?? DEFAULT_MAX_MESSAGE_LENGTH
   }

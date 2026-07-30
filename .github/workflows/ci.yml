@@ -5,6 +5,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets a run be re-triggered from the Actions tab without pushing a commit —
+  # needed to re-verify after an account/billing block clears, since a blocked
+  # run cannot be rerun (it never dispatched a job).
+  workflow_dispatch:
+
+# Supersede in-flight runs for the same ref instead of queueing them: a new push
+# invalidates the old result, and queued runs waste minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
