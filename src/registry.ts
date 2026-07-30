@@ -12,7 +12,7 @@ import type {
 } from './types'
 import type { CompiledUriTemplate } from './uri-template'
 import { DelegatingJsonSchemaConverter, StandardJsonSchemaConverter } from '@orpc/json-schema'
-import { walkProcedureContractsAsync } from '@orpc/server'
+import { getRouter, Procedure, unlazy, walkProcedureContractsAsync } from '@orpc/server'
 import { toArray } from '@orpc/shared'
 import { getMCPMeta, getMCPPrimitiveType } from './meta'
 import { compileUriTemplate } from './uri-template'
@@ -95,8 +95,11 @@ export async function buildMCPRegistry(
       return
     }
 
-    const procedure = contract as AnyProcedure
-    const def = procedure['~orpc']
+    const { default: procedure } = await unlazy(getRouter(router, path))
+    if (!(procedure instanceof Procedure)) {
+      throw new TypeError(`Missing or invalid implementation for MCP procedure at path: "${path.join('.')}".`)
+    }
+    const def = contract['~orpc']
     const name = meta.name ?? defaultName(path)
     const type = getMCPPrimitiveType(meta)
     const base = {

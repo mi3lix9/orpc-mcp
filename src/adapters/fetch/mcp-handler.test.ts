@@ -1,7 +1,17 @@
-import { os } from '@orpc/server'
+import { oc } from '@orpc/contract'
+import { implement, os } from '@orpc/server'
 import { ZodToJsonSchemaConverter } from '@orpc/zod'
 import { expectTypeOf } from 'vitest'
 import * as z from 'zod'
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  FIRST_MODERN_PROTOCOL_VERSION,
+  MCP_METHOD_HEADER,
+  MCP_NAME_HEADER,
+  MCP_PROTOCOL_VERSION_HEADER,
+  PROTOCOL_VERSION_META_KEY,
+} from '../../constants'
 import { mcp } from '../../meta'
 import { MCPHandler } from './mcp-handler'
 
@@ -118,6 +128,54 @@ describe('mCPHandler (fetch)', () => {
     const okResponse = await handle(handler, makeRequest('POST', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })))
     expect(okResponse.status).toBe(200)
   })
+  it('calls the implementation behind a contract-first tool', async () => {
+    const contract = {
+      greet: oc
+        .meta(mcp.tool({ name: 'contracted_greet' }))
+        .input(z.object({ name: z.string() }))
+        .output(z.object({ message: z.string() })),
+    }
+    const o = implement(contract)
+    const contractedRouter = o.router({
+      greet: o.greet.handler(({ input }) => ({ message: `Hello, ${input.name}!` })),
+    })
+    const handler = new MCPHandler(contractedRouter, {
+      converters: [new ZodToJsonSchemaConverter()],
+    })
+    const response = await handle(handler, new Request('https://x/mcp', {
+      method: 'POST',
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'contracted_greet',
+          arguments: { name: 'Contract' },
+          _meta: {
+            [PROTOCOL_VERSION_META_KEY]: FIRST_MODERN_PROTOCOL_VERSION,
+            [CLIENT_INFO_META_KEY]: { name: 'contract-first-test', version: '1.0.0' },
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+          },
+        },
+      }),
+      headers: {
+        'content-type': 'application/json',
+        [MCP_PROTOCOL_VERSION_HEADER]: FIRST_MODERN_PROTOCOL_VERSION,
+        [MCP_METHOD_HEADER]: 'tools/call',
+        [MCP_NAME_HEADER]: 'contracted_greet',
+      },
+    }))
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      jsonrpc: '2.0',
+      id: 3,
+      result: {
+        structuredContent: { message: 'Hello, Contract!' },
+      },
+    })
+  })
+
   it('applies the typed request context to catalog lists and calls', async () => {
     interface CatalogContext {
       allowedNames: Set<string>
