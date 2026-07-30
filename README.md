@@ -234,6 +234,11 @@ Catalog visibility is only a name-level outer gate. A permitted invocation still
 runs validation and ordinary oRPC middleware; use middleware for ownership,
 tenant isolation, and checks that depend on the resolved resource.
 
+See the runnable [multi-tenant planet SaaS example](examples/planet-multitenant.ts)
+and its [real Node HTTP server](examples/planet-multitenant-server.ts). The smoke
+test drives that server with the official MCP client as tenant admin, tenant
+member, and an admin from another tenant.
+
 ## Security
 
 For HTTP servers reachable by browsers, enable Origin and Host validation to guard against DNS-rebinding attacks. A missing `Origin` header still passes, so non-browser clients are unaffected.
