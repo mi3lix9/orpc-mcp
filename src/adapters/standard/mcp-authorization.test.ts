@@ -15,10 +15,25 @@ interface AuthorizationContext {
   allowedNames: Set<string>
 }
 
+const executions = {
+  middleware: 0,
+  alpha: 0,
+  config: 0,
+  planet: 0,
+  plan: 0,
+}
+
 const alpha = os.$context<AuthorizationContext>()
+  .use(async ({ next }) => {
+    executions.middleware++
+    return next()
+  })
   .meta(mcp.tool({ description: 'Alpha tool' }))
   .input(z.object({ value: z.string() }))
-  .handler(({ input }) => `alpha:${input.value}`)
+  .handler(({ input }) => {
+    executions.alpha++
+    return `alpha:${input.value}`
+  })
 
 const beta = os.$context<AuthorizationContext>()
   .meta(mcp.tool({ description: 'Beta tool' }))
@@ -33,19 +48,28 @@ const gamma = os.$context<AuthorizationContext>()
 const config = os.$context<AuthorizationContext>()
   .meta(mcp.resource({ uri: 'config://app', mimeType: 'text/plain' }))
   .output(z.string())
-  .handler(() => 'enabled=true')
+  .handler(() => {
+    executions.config++
+    return 'enabled=true'
+  })
 
 const planet = os.$context<AuthorizationContext>()
   .meta(mcp.resource({ uriTemplate: 'planet://{id}', mimeType: 'application/json' }))
   .input(z.object({ id: z.string() }))
-  .handler(({ input }) => ({ id: input.id }))
+  .handler(({ input }) => {
+    executions.planet++
+    return { id: input.id }
+  })
 
 const plan = os.$context<AuthorizationContext>()
   .meta(mcp.prompt({ description: 'Plan something' }))
   .input(z.object({ topic: z.string() }))
-  .handler(({ input }) => ({
-    messages: [{ role: 'user' as const, content: { type: 'text' as const, text: input.topic } }],
-  }))
+  .handler(({ input }) => {
+    executions.plan++
+    return {
+      messages: [{ role: 'user' as const, content: { type: 'text' as const, text: input.topic } }],
+    }
+  })
 
 const router = { alpha, beta, gamma, config, planet, plan }
 
@@ -61,6 +85,16 @@ function createHandler(
   return new MCPHandler(router, {
     converters: [new ZodToJsonSchemaConverter()],
     authorizeCatalogEntry,
+  })
+}
+
+const unknownRouter = {
+  noop: os.$context<AuthorizationContext>().handler(() => undefined),
+}
+
+function createUnknownHandler(): MCPHandler<AuthorizationContext> {
+  return new MCPHandler(unknownRouter, {
+    converters: [new ZodToJsonSchemaConverter()],
   })
 }
 
@@ -153,5 +187,64 @@ describe('catalog discovery authorization', () => {
     expect(names(await rpc(handler, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, none), 'tools'))
       .toEqual(['alpha', 'beta', 'gamma'])
     expect(completionOrder).toEqual(['beta', 'gamma', 'alpha'])
+  })
+})
+
+
+describe('catalog invocation authorization', () => {
+  beforeEach(() => {
+    for (const key of Object.keys(executions) as Array<keyof typeof executions>) {
+      executions[key] = 0
+    }
+  })
+
+  it('makes denied direct invocations identical to absent entries without executing procedures', async () => {
+    const deniedHandler = createHandler()
+    const unknownHandler = createUnknownHandler()
+    const messages = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'alpha', arguments: { value: 'x' } } },
+      { jsonrpc: '2.0', id: 2, method: 'resources/read', params: { uri: 'config://app' } },
+      { jsonrpc: '2.0', id: 3, method: 'resources/read', params: { uri: 'planet://mars' } },
+      { jsonrpc: '2.0', id: 4, method: 'prompts/get', params: { name: 'plan', arguments: { topic: 'x' } } },
+    ]
+
+    for (const message of messages) {
+      const denied = await rpc(deniedHandler, message, none)
+      const absent = await rpc(unknownHandler, message, none)
+      expect(denied.error).toEqual(absent.error)
+    }
+    expect(executions).toEqual({ middleware: 0, alpha: 0, config: 0, planet: 0, plan: 0 })
+  })
+
+  it('passes invocation params and permitted calls through validation, middleware, and handlers', async () => {
+    let invocationParams: Record<string, unknown> | undefined
+    const handler = createHandler(({ entry, operation, context, params }) => {
+      if (operation === 'invoke') {
+        invocationParams = params
+      }
+      return context.allowedNames.has(entry.name)
+    })
+    const context = { allowedNames: new Set(['alpha']) }
+
+    const invalid = await rpc(handler, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'alpha', arguments: { value: 42 } },
+    }, context)
+    expect(invalid.result).toMatchObject({ isError: true })
+    expect(executions.alpha).toBe(0)
+
+    executions.middleware = 0
+    const permitted = await rpc(handler, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'alpha', arguments: { value: 'ok' } },
+    }, context)
+    expect(permitted.error).toBeUndefined()
+    expect(invocationParams).toEqual({ name: 'alpha', arguments: { value: 'ok' } })
+    expect(executions.middleware).toBe(1)
+    expect(executions.alpha).toBe(1)
   })
 })

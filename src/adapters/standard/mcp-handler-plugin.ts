@@ -58,6 +58,7 @@ import {
   requestMetaOf,
   validateEnvelopeMeta,
 } from '../../protocol-era'
+import { resolveCatalogEntry } from './resolve-catalog-entry'
 import { isObject, isValidIncoming, withResolvedBody } from './utils'
 
 /**
@@ -284,8 +285,24 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
     //    codec re-reads the body to resolve its procedure; hand it a request
     //    with the parse already baked in so it shares this single read.
     //    Procedure errors are resolved by the codec (as an `MCPCodecBody`), not
-    //    thrown, so this path needs no try/catch.
     if (Object.hasOwn(PROCEDURE_METHODS, payload.method)) {
+      const params = isObject(payload.params) ? payload.params : {}
+      const authorize = this.authorizeCatalogEntry
+      if (authorize !== undefined) {
+        const resolved = resolveCatalogEntry(payload.method, params, await this.registry.get())
+        if (resolved !== undefined) {
+          const allowed = await authorize({
+            entry: resolved.entry,
+            operation: 'invoke',
+            context: options.context,
+            request,
+            params,
+          })
+          if (!allowed) {
+            return jsonRpc(200, id, { error: this.notFound(payload.method, params) })
+          }
+        }
+      }
       return this.frameProcedure(
         payload,
         id,

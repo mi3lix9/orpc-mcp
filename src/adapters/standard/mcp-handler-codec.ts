@@ -4,6 +4,7 @@ import type { StandardHandlerCodec, StandardHandlerCodecResolvedProcedure, Stand
 import type { Promisable } from '@orpc/shared'
 import type { StandardLazyRequest, StandardResponse } from '@standardserver/core'
 import type { MCPRegistryProvider } from '../../registry'
+import { resolveCatalogEntry } from './resolve-catalog-entry'
 import { isObject, isValidIncoming } from './utils'
 
 /**
@@ -41,44 +42,15 @@ export class MCPHandlerCodec<T extends Context> implements StandardHandlerCodec<
     }
 
     const params = isObject(message.params) ? message.params : {}
-    const registry = await this.registry.get()
-
-    if (message.method === 'tools/call') {
-      const entry = typeof params.name === 'string' ? registry.tools.get(params.name) : undefined
-      if (entry === undefined) {
-        return undefined
-      }
-      const input = isObject(params.arguments) ? params.arguments : {}
-      return { path: [entry.definition.name], procedure: entry.procedure, decodeInput: () => Promise.resolve(input) }
-    }
-
-    if (message.method === 'resources/read') {
-      if (typeof params.uri !== 'string') {
-        return undefined
-      }
-      const staticEntry = registry.resources.get(params.uri)
-      if (staticEntry !== undefined) {
-        return { path: [staticEntry.definition.name], procedure: staticEntry.procedure, decodeInput: () => Promise.resolve({}) }
-      }
-      for (const entry of registry.resourceTemplates) {
-        const variables = entry.template.match(params.uri)
-        if (variables !== undefined) {
-          return { path: [entry.definition.name], procedure: entry.procedure, decodeInput: () => Promise.resolve(variables) }
-        }
-      }
+    const resolved = resolveCatalogEntry(message.method, params, await this.registry.get())
+    if (resolved === undefined) {
       return undefined
     }
-
-    if (message.method === 'prompts/get') {
-      const entry = typeof params.name === 'string' ? registry.prompts.get(params.name) : undefined
-      if (entry === undefined) {
-        return undefined
-      }
-      const input = isObject(params.arguments) ? params.arguments : {}
-      return { path: [entry.definition.name], procedure: entry.procedure, decodeInput: () => Promise.resolve(input) }
+    return {
+      path: [resolved.entry.name],
+      procedure: resolved.entry.procedure,
+      decodeInput: () => Promise.resolve(resolved.input),
     }
-
-    return undefined
   }
 
   encodeOutput(output: unknown, _procedure: AnyProcedure, _path: string[], _options: StandardHandlerHandleOptions<T>): Promisable<StandardResponse> {
