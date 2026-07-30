@@ -1,5 +1,6 @@
 import { os } from '@orpc/server'
 import { ZodToJsonSchemaConverter } from '@orpc/zod'
+import { expectTypeOf } from 'vitest'
 import * as z from 'zod'
 import { mcp } from '../../meta'
 import { MCPHandler } from './mcp-handler'
@@ -116,5 +117,42 @@ describe('mCPHandler (fetch)', () => {
     // A missing Origin (non-browser client) still passes.
     const okResponse = await handle(handler, makeRequest('POST', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })))
     expect(okResponse.status).toBe(200)
+  })
+  it('applies the typed request context to catalog lists and calls', async () => {
+    interface CatalogContext {
+      allowedNames: Set<string>
+    }
+    const catalogRouter = {
+      visible: os.$context<CatalogContext>()
+        .meta(mcp.tool())
+        .handler(() => 'visible'),
+      hidden: os.$context<CatalogContext>()
+        .meta(mcp.tool())
+        .handler(() => 'hidden'),
+    }
+    const handler = new MCPHandler(catalogRouter, {
+      authorizeCatalogEntry: ({ entry, context }) => {
+        expectTypeOf(context.allowedNames).toEqualTypeOf<Set<string>>()
+        return context.allowedNames.has(entry.name)
+      },
+    })
+    const context = { allowedNames: new Set(['visible']) }
+    const send = async (message: Record<string, unknown>): Promise<unknown> => {
+      const { response } = await handler.handle(postRequest(message), { context })
+      return (response as Response).json()
+    }
+
+    const listed = z.object({
+      result: z.object({ tools: z.array(z.object({ name: z.string() })) }),
+    }).parse(await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))
+    expect(listed.result.tools.map(tool => tool.name)).toEqual(['visible'])
+
+    const permitted = z.object({ result: z.record(z.string(), z.unknown()) })
+      .parse(await send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'visible' } }))
+    expect(permitted.result).toBeDefined()
+
+    const denied = z.object({ error: z.object({ code: z.number(), message: z.string() }) })
+      .parse(await send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hidden' } }))
+    expect(denied.error.code).toBe(-32602)
   })
 })

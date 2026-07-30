@@ -1,3 +1,4 @@
+import type { Meta } from '@orpc/contract'
 import type { JsonSchema, JsonSchemaConverter } from '@orpc/json-schema'
 import type { AnyProcedure, AnyRouter } from '@orpc/server'
 import type { MCPMeta } from './meta'
@@ -16,30 +17,43 @@ import { toArray } from '@orpc/shared'
 import { getMCPMeta, getMCPPrimitiveType } from './meta'
 import { compileUriTemplate } from './uri-template'
 
-export interface ToolEntry {
+export type MCPCatalogKind = 'tool' | 'resource' | 'resourceTemplate' | 'prompt'
+
+export interface MCPCatalogEntryBase {
+  kind: MCPCatalogKind
+  path: readonly string[]
+  name: string
+  definition: ToolDefinition | ResourceDefinition | ResourceTemplateDefinition | PromptDefinition
+  meta: MCPMeta
+  contractMeta: Meta
+}
+
+export interface ToolEntry extends MCPCatalogEntryBase {
+  kind: 'tool'
   definition: ToolDefinition
   procedure: AnyProcedure
-  meta: MCPMeta
 }
 
-export interface ResourceEntry {
+export interface ResourceEntry extends MCPCatalogEntryBase {
+  kind: 'resource'
   definition: ResourceDefinition
   procedure: AnyProcedure
-  meta: MCPMeta
 }
 
-export interface ResourceTemplateEntry {
+export interface ResourceTemplateEntry extends MCPCatalogEntryBase {
+  kind: 'resourceTemplate'
   definition: ResourceTemplateDefinition
   template: CompiledUriTemplate
   procedure: AnyProcedure
-  meta: MCPMeta
 }
 
-export interface PromptEntry {
+export interface PromptEntry extends MCPCatalogEntryBase {
+  kind: 'prompt'
   definition: PromptDefinition
   procedure: AnyProcedure
-  meta: MCPMeta
 }
+
+export type MCPRegistryEntry = ToolEntry | ResourceEntry | ResourceTemplateEntry | PromptEntry
 
 export interface MCPRegistry {
   tools: Map<string, ToolEntry>
@@ -85,6 +99,12 @@ export async function buildMCPRegistry(
     const def = procedure['~orpc']
     const name = meta.name ?? defaultName(path)
     const type = getMCPPrimitiveType(meta)
+    const base = {
+      path: [...path],
+      name,
+      meta,
+      contractMeta: def.meta,
+    }
 
     if (type === 'tool') {
       const definition: ToolDefinition = {
@@ -113,7 +133,7 @@ export async function buildMCPRegistry(
       if (registry.tools.has(name)) {
         throw new Error(`Duplicate MCP tool name "${name}" (from ${path.join('.')}). Names must be unique — set a distinct \`name\` in mcp.tool().`)
       }
-      registry.tools.set(name, { definition, procedure, meta })
+      registry.tools.set(name, { ...base, kind: 'tool', definition, procedure })
     }
     else if (type === 'resource') {
       if (meta.uriTemplate !== undefined) {
@@ -123,10 +143,11 @@ export async function buildMCPRegistry(
           throw new Error(`Duplicate MCP resource template "${meta.uriTemplate}" (from ${path.join('.')}). Resource templates must be unique.`)
         }
         registry.resourceTemplates.push({
+          ...base,
+          kind: 'resourceTemplate',
           definition,
           template: compileUriTemplate(meta.uriTemplate),
           procedure,
-          meta,
         })
       }
       else if (meta.uri !== undefined) {
@@ -135,7 +156,7 @@ export async function buildMCPRegistry(
         if (registry.resources.has(meta.uri)) {
           throw new Error(`Duplicate MCP resource URI "${meta.uri}" (from ${path.join('.')}). Resource URIs must be unique.`)
         }
-        registry.resources.set(meta.uri, { definition, procedure, meta })
+        registry.resources.set(meta.uri, { ...base, kind: 'resource', definition, procedure })
       }
       else {
         throw new Error(`MCP resource "${name}" must define a "uri" or "uriTemplate".`)
@@ -156,7 +177,7 @@ export async function buildMCPRegistry(
       if (registry.prompts.has(name)) {
         throw new Error(`Duplicate MCP prompt name "${name}" (from ${path.join('.')}). Names must be unique — set a distinct \`name\` in mcp.prompt().`)
       }
-      registry.prompts.set(name, { definition, procedure, meta })
+      registry.prompts.set(name, { ...base, kind: 'prompt', definition, procedure })
     }
   })
 

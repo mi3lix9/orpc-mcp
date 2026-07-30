@@ -1,12 +1,20 @@
+import type { Meta, MetaPlugin } from '@orpc/contract'
 import { os } from '@orpc/server'
 import { ZodToJsonSchemaConverter } from '@orpc/zod'
 import * as z from 'zod'
 import { mcp } from './meta'
 import { buildMCPRegistry } from './registry'
 
+function access(permission: string): MetaPlugin<any, any, any> {
+  return {
+    name: '~test-access',
+    init: (meta: Meta) => ({ ...meta, '~test-access': { permission } }),
+  }
+}
 // --- procedures ---
 
 const greet = os
+  .meta(access('greetings.read'))
   .meta(mcp.tool({ title: 'Greet', description: 'Greet a person' }))
   .input(z.object({ name: z.string() }))
   .output(z.object({ message: z.string() }))
@@ -74,6 +82,32 @@ describe('buildMCPRegistry', () => {
     ]
     expect(allNames).not.toContain('secret')
     expect(allNames.sort()).toEqual(['config', 'getPlanet', 'greet', 'planTrip', 'planet_list'])
+  })
+
+  it('retains catalog authorization metadata for every primitive', () => {
+    expect(registry.tools.get('greet')).toMatchObject({
+      kind: 'tool',
+      path: ['greet'],
+      name: 'greet',
+      contractMeta: {
+        '~test-access': { permission: 'greetings.read' },
+      },
+    })
+    expect(registry.resources.get('config://app')).toMatchObject({
+      kind: 'resource',
+      path: ['config'],
+      name: 'config',
+    })
+    expect(registry.resourceTemplates[0]).toMatchObject({
+      kind: 'resourceTemplate',
+      path: ['getPlanet'],
+      name: 'getPlanet',
+    })
+    expect(registry.prompts.get('planTrip')).toMatchObject({
+      kind: 'prompt',
+      path: ['planTrip'],
+      name: 'planTrip',
+    })
   })
 
   it('assigns a nested tool the default name from its path joined by "_"', () => {

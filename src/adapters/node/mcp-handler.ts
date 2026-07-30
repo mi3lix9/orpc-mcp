@@ -11,7 +11,7 @@ import { MCPHandlerCodec } from '../standard/mcp-handler-codec'
 import { MCPHandlerPlugin } from '../standard/mcp-handler-plugin'
 
 export interface MCPHandlerOptions<T extends Context>
-  extends NodeHttpHandlerOptions<T>, Omit<StandardHandlerOptions<T>, 'plugins'>, MCPHandlerPluginOptions {
+  extends NodeHttpHandlerOptions<T>, Omit<StandardHandlerOptions<T>, 'plugins'>, MCPHandlerPluginOptions<T> {
   /** Schema → JSON Schema converters (e.g. `new ZodToJsonSchemaConverter()`). */
   converters?: JsonSchemaConverter[]
 }

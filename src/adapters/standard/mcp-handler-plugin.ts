@@ -8,6 +8,7 @@ import type {
 } from '@orpc/server/standard'
 import type { InterceptorOptions } from '@orpc/shared'
 import type { StandardLazyRequest } from '@standardserver/core'
+import type { AuthorizeCatalogEntry, AuthorizeCatalogEntryOptions, MCPCatalogEntry } from '../../authorization'
 import type { MCPRegistry, MCPRegistryProvider } from '../../registry'
 import type {
   CacheHints,
@@ -31,6 +32,7 @@ import {
   DEFAULT_SERVER_VERSION,
   FORBIDDEN_ERROR,
   HEADER_MISMATCH,
+  INTERNAL_ERROR,
   INVALID_PARAMS,
   INVALID_REQUEST,
   JSONRPC_VERSION,
@@ -56,6 +58,7 @@ import {
   requestMetaOf,
   validateEnvelopeMeta,
 } from '../../protocol-era'
+import { resolveCatalogEntry } from './resolve-catalog-entry'
 import { isObject, isValidIncoming, withResolvedBody } from './utils'
 
 /**
@@ -93,11 +96,23 @@ type Classification
   = | { era: 'legacy' }
     | { era: 'modern', revision: string }
 
-export interface MCPHandlerPluginOptions {
+class CatalogAuthorizationError extends Error {
+  constructor(cause: unknown, readonly requestId: string | number) {
+    super('Catalog authorization failed', { cause })
+    this.name = 'CatalogAuthorizationError'
+  }
+}
+
+export interface MCPHandlerPluginOptions<T extends Context> {
   /** Server identity reported during `initialize` and in modern result `_meta`. */
   serverInfo?: Partial<Implementation>
   /** Optional `instructions` returned to the client by `initialize`/`server/discover`. */
   instructions?: string
+  /**
+   * Request-local visibility gate for MCP catalog discovery and invocation.
+   * Ordinary oRPC middleware remains the final authorization boundary.
+   */
+  authorizeCatalogEntry?: AuthorizeCatalogEntry<T>
   /**
    * Enable Origin/Host validation (DNS-rebinding protection) for HTTP transports.
    * A missing `Origin` header always passes (non-browser clients). When enabled,
@@ -171,10 +186,11 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
   private readonly pageSize: number
   private readonly cache: CacheHints
   private readonly checksStandardHeaders: boolean
+  private readonly authorizeCatalogEntry: AuthorizeCatalogEntry<T> | undefined
 
   constructor(
     private readonly registry: MCPRegistryProvider,
-    options: MCPHandlerPluginOptions = {},
+    options: MCPHandlerPluginOptions<T> = {},
   ) {
     this.serverInfo = {
       name: options.serverInfo?.name ?? DEFAULT_SERVER_NAME,
@@ -182,6 +198,7 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
       ...(options.serverInfo?.title !== undefined ? { title: options.serverInfo.title } : {}),
     }
     this.instructions = options.instructions
+    this.authorizeCatalogEntry = options.authorizeCatalogEntry
     this.enableDnsRebindingProtection = options.enableDnsRebindingProtection ?? false
     this.allowedOrigins = options.allowedOrigins
     this.allowedHosts = options.allowedHosts
@@ -205,9 +222,27 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
     return {
       ...options,
       routingInterceptors: [
+        ...(this.authorizeCatalogEntry === undefined
+          ? []
+          : [(interceptorOptions: InterceptorOptions<StandardHandlerRoutingInterceptorOptions<T>, Promise<StandardHandlerHandleResult>>) =>
+              this.sanitizeAuthorizationFailure(interceptorOptions)]),
         ...(options.routingInterceptors ?? []),
         interceptorOptions => this.route(interceptorOptions),
       ],
+    }
+  }
+
+  private async sanitizeAuthorizationFailure(
+    options: InterceptorOptions<StandardHandlerRoutingInterceptorOptions<T>, Promise<StandardHandlerHandleResult>>,
+  ): Promise<StandardHandlerHandleResult> {
+    try {
+      return await options.next()
+    }
+    catch (error) {
+      if (!(error instanceof CatalogAuthorizationError)) {
+        throw error
+      }
+      return jsonRpc(200, error.requestId, { error: { code: INTERNAL_ERROR, message: 'Internal error' } })
     }
   }
 
@@ -275,8 +310,24 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
     //    codec re-reads the body to resolve its procedure; hand it a request
     //    with the parse already baked in so it shares this single read.
     //    Procedure errors are resolved by the codec (as an `MCPCodecBody`), not
-    //    thrown, so this path needs no try/catch.
     if (Object.hasOwn(PROCEDURE_METHODS, payload.method)) {
+      const params = isObject(payload.params) ? payload.params : {}
+      const authorize = this.authorizeCatalogEntry
+      if (authorize !== undefined) {
+        const resolved = resolveCatalogEntry(payload.method, params, await this.registry.get())
+        if (resolved !== undefined) {
+          const allowed = await this.runAuthorization(authorize, {
+            entry: resolved.entry,
+            operation: 'invoke',
+            context: options.context,
+            request,
+            params,
+          }, id)
+          if (!allowed) {
+            return jsonRpc(200, id, { error: this.notFound(payload.method, params) })
+          }
+        }
+      }
       return this.frameProcedure(
         payload,
         id,
@@ -288,10 +339,13 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
     // 9. Protocol methods → early response. These throw `ORPCError` on failure
     //    (unknown method, bad cursor); map to a JSON-RPC error at this boundary.
     try {
-      const result = await this.handleProtocol(payload, classified.era)
+      const result = await this.handleProtocol(payload, classified.era, options, id)
       return jsonRpc(200, id, { result: this.finalizeResult(payload.method, classified.era, result) })
     }
     catch (error) {
+      if (error instanceof CatalogAuthorizationError) {
+        throw error
+      }
       return jsonRpc(200, id, { error: toJSONRPCError(error) })
     }
   }
@@ -559,7 +613,12 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
     return result
   }
 
-  private async handleProtocol(message: JSONRPCIncoming, era: ProtocolEra): Promise<unknown> {
+  private async handleProtocol(
+    message: JSONRPCIncoming,
+    era: ProtocolEra,
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+    id: string | number,
+  ): Promise<unknown> {
     const params = isObject(message.params) ? message.params : {}
     const method = message.method
 
@@ -572,21 +631,63 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
 
     switch (method) {
       case 'initialize':
-        return this.initialize(params)
+        return this.initialize(params, options, id)
       case 'ping':
         return {}
       case 'server/discover':
-        return this.discover()
-      case 'tools/list':
-        return this.paginate([...(await this.registry.get()).tools.values()].map(entry => entry.definition), 'tools', params.cursor)
-      case 'resources/list':
-        return this.paginate([...(await this.registry.get()).resources.values()].map(entry => entry.definition), 'resources', params.cursor)
-      case 'resources/templates/list':
-        return this.paginate((await this.registry.get()).resourceTemplates.map(entry => entry.definition), 'resourceTemplates', params.cursor)
-      case 'prompts/list':
-        return this.paginate([...(await this.registry.get()).prompts.values()].map(entry => entry.definition), 'prompts', params.cursor)
+        return this.discover(options, id)
+      case 'tools/list': {
+        const entries = await this.authorizedEntries([...(await this.registry.get()).tools.values()], options, id)
+        return this.paginate(entries.map(entry => entry.definition), 'tools', params.cursor)
+      }
+      case 'resources/list': {
+        const entries = await this.authorizedEntries([...(await this.registry.get()).resources.values()], options, id)
+        return this.paginate(entries.map(entry => entry.definition), 'resources', params.cursor)
+      }
+      case 'resources/templates/list': {
+        const entries = await this.authorizedEntries((await this.registry.get()).resourceTemplates, options, id)
+        return this.paginate(entries.map(entry => entry.definition), 'resourceTemplates', params.cursor)
+      }
+      case 'prompts/list': {
+        const entries = await this.authorizedEntries([...(await this.registry.get()).prompts.values()], options, id)
+        return this.paginate(entries.map(entry => entry.definition), 'prompts', params.cursor)
+      }
       default:
         throw new ORPCError('METHOD_NOT_FOUND', { message: `Method not found: ${method}` })
+    }
+  }
+
+  private async authorizedEntries<E extends MCPCatalogEntry>(
+    entries: readonly E[],
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+    requestId: string | number,
+  ): Promise<E[]> {
+    const authorize = this.authorizeCatalogEntry
+    if (authorize === undefined) {
+      return [...entries]
+    }
+
+    const decisions = await Promise.all(entries.map(entry =>
+      this.runAuthorization(authorize, {
+        entry,
+        operation: 'discover',
+        context: options.context,
+        request: options.request,
+      }, requestId),
+    ))
+    return entries.filter((_, index) => decisions[index])
+  }
+
+  private async runAuthorization(
+    authorize: AuthorizeCatalogEntry<T>,
+    options: AuthorizeCatalogEntryOptions<T>,
+    requestId: string | number,
+  ): Promise<boolean> {
+    try {
+      return await authorize(options)
+    }
+    catch (error) {
+      throw new CatalogAuthorizationError(error, requestId)
     }
   }
 
@@ -595,15 +696,22 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
    * only ever offers modern revisions — a legacy revision here would be a
    * version a modern client cannot actually speak.
    */
-  private async discover(): Promise<Omit<DiscoverResult, 'resultType' | keyof CacheHints>> {
+  private async discover(
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+    requestId: string | number,
+  ): Promise<Omit<DiscoverResult, 'resultType' | keyof CacheHints>> {
     return {
       supportedVersions: [...SUPPORTED_MODERN_PROTOCOL_VERSIONS],
-      capabilities: await this.capabilities(),
+      capabilities: await this.capabilities(options, requestId),
       ...(this.instructions !== undefined ? { instructions: this.instructions } : {}),
     }
   }
 
-  private async initialize(params: Record<string, unknown>): Promise<InitializeResult> {
+  private async initialize(
+    params: Record<string, unknown>,
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+    requestId: string | number,
+  ): Promise<InitializeResult> {
     const requested = typeof params.protocolVersion === 'string' ? params.protocolVersion : undefined
     // Legacy negotiation only ever consults the legacy list, so a modern
     // revision can never be accepted or counter-offered by the handshake.
@@ -613,23 +721,32 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
 
     return {
       protocolVersion,
-      capabilities: await this.capabilities(),
+      capabilities: await this.capabilities(options, requestId),
       serverInfo: this.serverInfo,
       ...(this.instructions !== undefined ? { instructions: this.instructions } : {}),
     }
   }
 
-  /** What this server can do, derived from what the router actually registered. */
-  private async capabilities(): Promise<ServerCapabilities> {
+  /** What this server can do, derived from the request-authorized catalog. */
+  private async capabilities(
+    options: StandardHandlerRoutingInterceptorOptions<T>,
+    requestId: string | number,
+  ): Promise<ServerCapabilities> {
     const registry = await this.registry.get()
+    const [tools, resources, resourceTemplates, prompts] = await Promise.all([
+      this.authorizedEntries([...registry.tools.values()], options, requestId),
+      this.authorizedEntries([...registry.resources.values()], options, requestId),
+      this.authorizedEntries(registry.resourceTemplates, options, requestId),
+      this.authorizedEntries([...registry.prompts.values()], options, requestId),
+    ])
     const capabilities: ServerCapabilities = {}
-    if (registry.tools.size > 0) {
+    if (tools.length > 0) {
       capabilities.tools = { listChanged: false }
     }
-    if (registry.resources.size > 0 || registry.resourceTemplates.length > 0) {
+    if (resources.length > 0 || resourceTemplates.length > 0) {
       capabilities.resources = { subscribe: false, listChanged: false }
     }
-    if (registry.prompts.size > 0) {
+    if (prompts.length > 0) {
       capabilities.prompts = { listChanged: false }
     }
     return capabilities
