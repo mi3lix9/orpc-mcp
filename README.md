@@ -147,22 +147,92 @@ await new MCPHandler(router, { converters: [new ZodToJsonSchemaConverter()] })
 
 ## Authorization
 
-Authentication and authorization are your application's responsibility — this package stays unopinionated about tokens, scopes, and OAuth. Supply request-derived values as `context` when calling the handler, then enforce them with ordinary [middleware](https://orpc.dev/docs/middleware), which runs for every tool, resource, and prompt call.
+Authentication and catalog authorization are separate layers:
+
+1. Authenticate the request before calling `handler.handle` and put the resulting actor, tenant, and grants in oRPC `context`.
+2. Use `authorizeCatalogEntry` to hide entries from discovery and to reject guessed MCP names/URIs.
+3. Keep ordinary oRPC middleware as the final authorization boundary for ownership, tenant, and resource-state checks.
+
+Application permission metadata is independent of `mcp.*` metadata:
 
 ```ts
-export const authed = os.use(({ context, next, errors }) => {
-  const user = verifyToken(context.authToken)
-  if (!user)
-    throw errors.UNAUTHORIZED()
-  return next({ context: { user } })
+import type { AnySchema, ErrorMap, Meta, MetaPlugin } from '@orpc/contract'
+import { os } from '@orpc/server'
+import { ZodToJsonSchemaConverter } from '@orpc/zod'
+import { mcp } from 'orpc-mcp'
+import { MCPHandler } from 'orpc-mcp/fetch'
+
+interface AccessMetadata {
+  permission: string
+}
+
+interface RequestContext {
+  user: { id: string }
+  permissions: ReadonlySet<string>
+}
+
+function access(permission: string): MetaPlugin<AnySchema, AnySchema, ErrorMap> {
+  return {
+    name: '~access',
+    init: (meta: Meta): Meta => ({
+      ...meta,
+      '~access': { permission } satisfies AccessMetadata,
+    }),
+  }
+}
+
+function isAccessMetadata(value: unknown): value is AccessMetadata {
+  return typeof value === 'object'
+    && value !== null
+    && 'permission' in value
+    && typeof value.permission === 'string'
+}
+
+const listOrders = os.$context<RequestContext>()
+  .meta(access('orders.list'))
+  .meta(mcp.tool({
+    description: 'List orders visible to the current user',
+    annotations: { readOnlyHint: true },
+  }))
+  .use(enforceOrderOwnership) // Existing oRPC middleware remains mandatory.
+  .handler(({ context }) => ordersFor(context.user.id))
+
+const router = { listOrders }
+
+const handler = new MCPHandler(router, {
+  converters: [new ZodToJsonSchemaConverter()],
+  authorizeCatalogEntry: ({ entry, context }) => {
+    const metadata = entry.contractMeta['~access']
+    return isAccessMetadata(metadata)
+      && context.permissions.has(metadata.permission)
+  },
 })
 
-export const deletePlanet = authed
-  .meta(mcp.tool({ description: 'Delete a planet' }))
-  .handler(({ context }) => remove(context.user))
+export async function POST(request: Request) {
+  // Validate the credential, issuer, audience/resource, expiry, and scopes here.
+  const context: RequestContext = await authenticateRequest(request)
+  const { response } = await handler.handle(request, { context })
+  return response ?? new Response('Not found', { status: 404 })
+}
 ```
 
-A thrown `UNAUTHORIZED` reaches the model as an in-band tool error, or a resource/prompt request as a protocol error.
+The callback runs per request for tools, static resources, resource templates,
+and prompts. It filters every list before pagination, controls per-request
+capability advertisement, and gates `tools/call`, `resources/read`, and
+`prompts/get` before the procedure pipeline. Decisions are never cached across
+contexts. A denied entry intentionally returns the same protocol error as an
+unknown entry; callback failures return only `-32603 Internal error`.
+
+This callback is not an OAuth implementation. For remote HTTP servers, follow
+the [MCP authorization guidance](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/authorization):
+use a maintained OAuth/token-validation library and validate issuer, audience
+or resource, expiry, and least-privilege scopes before constructing the
+request context. Do not log credentials. stdio servers can derive credentials
+from their local process environment.
+
+Catalog visibility is only a name-level outer gate. A permitted invocation still
+runs validation and ordinary oRPC middleware; use middleware for ownership,
+tenant isolation, and checks that depend on the resolved resource.
 
 ## Security
 

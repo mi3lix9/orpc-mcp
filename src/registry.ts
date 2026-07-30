@@ -53,6 +53,8 @@ export interface PromptEntry extends MCPCatalogEntryBase {
   procedure: AnyProcedure
 }
 
+export type MCPRegistryEntry = ToolEntry | ResourceEntry | ResourceTemplateEntry | PromptEntry
+
 export interface MCPRegistry {
   tools: Map<string, ToolEntry>
   /** Static resources keyed by their fixed URI. */

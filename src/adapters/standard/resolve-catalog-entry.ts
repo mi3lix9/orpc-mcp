@@ -1,9 +1,8 @@
-import type { MCPCatalogEntry } from '../../authorization'
-import type { MCPRegistry } from '../../registry'
+import type { MCPRegistry, MCPRegistryEntry } from '../../registry'
 import { isObject } from './utils'
 
 export interface ResolvedCatalogEntry {
-  entry: MCPCatalogEntry
+  entry: MCPRegistryEntry
   input: Record<string, unknown>
 }
 

@@ -5,11 +5,12 @@ import * as z from 'zod'
 import { mcp } from './meta'
 import { buildMCPRegistry } from './registry'
 
-
-const access = (permission: string): MetaPlugin<any, any, any> => ({
-  name: '~test-access',
-  init: (meta: Meta) => ({ ...meta, '~test-access': { permission } }),
-})
+function access(permission: string): MetaPlugin<any, any, any> {
+  return {
+    name: '~test-access',
+    init: (meta: Meta) => ({ ...meta, '~test-access': { permission } }),
+  }
+}
 // --- procedures ---
 
 const greet = os

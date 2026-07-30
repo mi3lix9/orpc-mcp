@@ -190,7 +190,6 @@ describe('catalog discovery authorization', () => {
   })
 })
 
-
 describe('catalog invocation authorization', () => {
   beforeEach(() => {
     for (const key of Object.keys(executions) as Array<keyof typeof executions>) {

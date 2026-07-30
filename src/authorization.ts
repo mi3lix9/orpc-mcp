@@ -8,11 +8,13 @@ import type {
   ToolEntry,
 } from './registry'
 
+type PublicCatalogEntry<E> = Pick<E, Extract<keyof E, 'kind' | 'path' | 'name' | 'definition' | 'meta' | 'contractMeta'>>
+
 export type MCPCatalogEntry
-  = | ToolEntry
-    | ResourceEntry
-    | ResourceTemplateEntry
-    | PromptEntry
+  = | PublicCatalogEntry<ToolEntry>
+    | PublicCatalogEntry<ResourceEntry>
+    | PublicCatalogEntry<ResourceTemplateEntry>
+    | PublicCatalogEntry<PromptEntry>
 
 export type MCPCatalogOperation = 'discover' | 'invoke'
 

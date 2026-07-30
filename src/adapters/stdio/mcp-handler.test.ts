@@ -1,6 +1,7 @@
 import { Readable, Writable } from 'node:stream'
 import { os } from '@orpc/server'
 import { ZodToJsonSchemaConverter } from '@orpc/zod'
+import { expectTypeOf } from 'vitest'
 import * as z from 'zod'
 import {
   CLIENT_CAPABILITIES_META_KEY,
@@ -172,5 +173,54 @@ describe('mCPHandler (stdio) — modern era', () => {
     expect(responses[1].result.resultType).toBe('complete')
     // The legacy request after a modern one must stay legacy-shaped.
     expect(responses[2].result.resultType).toBeUndefined()
+  })
+})
+
+describe('mCPHandler (stdio) catalog authorization', () => {
+  it('applies the typed listen context to catalog lists and calls', async () => {
+    interface CatalogContext {
+      allowedNames: Set<string>
+    }
+    const catalogRouter = {
+      visible: os.$context<CatalogContext>()
+        .meta(mcp.tool())
+        .handler(() => 'visible'),
+      hidden: os.$context<CatalogContext>()
+        .meta(mcp.tool())
+        .handler(() => 'hidden'),
+    }
+    const handler = new MCPHandler(catalogRouter, {
+      authorizeCatalogEntry: ({ entry, context }) => {
+        expectTypeOf(context.allowedNames).toEqualTypeOf<Set<string>>()
+        return context.allowedNames.has(entry.name)
+      },
+    })
+    const payload = `${[
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'visible' } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hidden' } },
+    ].map(message => JSON.stringify(message)).join('\n')}\n`
+    const input = Readable.from([payload])
+    const chunks: string[] = []
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString())
+        callback()
+      },
+    })
+
+    await handler.listen({
+      context: { allowedNames: new Set(['visible']) },
+      input,
+      output,
+    })
+    const responses: unknown[] = chunks.join('').trim().split('\n').map(line => JSON.parse(line))
+
+    const listed = z.object({
+      result: z.object({ tools: z.array(z.object({ name: z.string() })) }),
+    }).parse(responses[0])
+    expect(listed.result.tools.map(tool => tool.name)).toEqual(['visible'])
+    expect(z.object({ result: z.record(z.string(), z.unknown()) }).parse(responses[1]).result).toBeDefined()
+    expect(z.object({ error: z.object({ code: z.number() }) }).parse(responses[2]).error.code).toBe(-32602)
   })
 })
