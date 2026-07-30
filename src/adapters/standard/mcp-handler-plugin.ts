@@ -8,6 +8,7 @@ import type {
 } from '@orpc/server/standard'
 import type { InterceptorOptions } from '@orpc/shared'
 import type { StandardLazyRequest } from '@standardserver/core'
+import type { AuthorizeCatalogEntry } from '../../authorization'
 import type { MCPRegistry, MCPRegistryProvider } from '../../registry'
 import type {
   CacheHints,
@@ -93,11 +94,16 @@ type Classification
   = | { era: 'legacy' }
     | { era: 'modern', revision: string }
 
-export interface MCPHandlerPluginOptions {
+export interface MCPHandlerPluginOptions<T extends Context> {
   /** Server identity reported during `initialize` and in modern result `_meta`. */
   serverInfo?: Partial<Implementation>
   /** Optional `instructions` returned to the client by `initialize`/`server/discover`. */
   instructions?: string
+  /**
+   * Request-local visibility gate for MCP catalog discovery and invocation.
+   * Ordinary oRPC middleware remains the final authorization boundary.
+   */
+  authorizeCatalogEntry?: AuthorizeCatalogEntry<T>
   /**
    * Enable Origin/Host validation (DNS-rebinding protection) for HTTP transports.
    * A missing `Origin` header always passes (non-browser clients). When enabled,
@@ -171,10 +177,11 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
   private readonly pageSize: number
   private readonly cache: CacheHints
   private readonly checksStandardHeaders: boolean
+  private readonly authorizeCatalogEntry: AuthorizeCatalogEntry<T> | undefined
 
   constructor(
     private readonly registry: MCPRegistryProvider,
-    options: MCPHandlerPluginOptions = {},
+    options: MCPHandlerPluginOptions<T> = {},
   ) {
     this.serverInfo = {
       name: options.serverInfo?.name ?? DEFAULT_SERVER_NAME,
@@ -182,6 +189,7 @@ export class MCPHandlerPlugin<T extends Context> implements StandardHandlerPlugi
       ...(options.serverInfo?.title !== undefined ? { title: options.serverInfo.title } : {}),
     }
     this.instructions = options.instructions
+    this.authorizeCatalogEntry = options.authorizeCatalogEntry
     this.enableDnsRebindingProtection = options.enableDnsRebindingProtection ?? false
     this.allowedOrigins = options.allowedOrigins
     this.allowedHosts = options.allowedHosts

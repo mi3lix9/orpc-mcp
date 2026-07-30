@@ -15,7 +15,7 @@ import { MCPHandlerPlugin } from '../standard/mcp-handler-plugin'
 
 const DEFAULT_MAX_MESSAGE_LENGTH = 4 * 1024 * 1024 // 4 MB
 
-export interface MCPHandlerOptions<T extends Context> extends Omit<StandardHandlerOptions<T>, 'plugins'>, MCPHandlerPluginOptions {
+export interface MCPHandlerOptions<T extends Context> extends Omit<StandardHandlerOptions<T>, 'plugins'>, MCPHandlerPluginOptions<T> {
   /** Schema → JSON Schema converters (e.g. `new ZodToJsonSchemaConverter()`). */
   converters?: JsonSchemaConverter[]
   plugins?: StandardHandlerPlugin<T>[]
